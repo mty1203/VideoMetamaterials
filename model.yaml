@@ -8,6 +8,9 @@ selected_channels: # select channels to consider: 0 - u_1, 1 - u_2, 2 - \sigma_{
 train_timesteps: 256
 sampling_timesteps: 256 # DDIM (https://arxiv.org/abs/2010.02502) is applied if sampling_timesteps < train_timesteps
 use_dynamic_thres: true
+# physics / multi-scale consistency (set lambda_phys=0.0 to disable)
+lambda_phys: 0.0
+phys_num_levels: 2
 # architecture configuration
 reference_frame: 'lagrangian' # 'lagrangian', 'eulerian'
 padding_mode: 'zeros' # 'zeros', 'circular_1d', 'circular'

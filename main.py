@@ -88,6 +88,9 @@ def main():
         loss_type = 'l1',
         use_dynamic_thres = config['use_dynamic_thres'],
         sampling_timesteps = config['sampling_timesteps'],
+        # physics consistency (multi-scale latent RG-style loss)
+        lambda_phys = config.get('lambda_phys', 0.0),
+        phys_num_levels = config.get('phys_num_levels', 2),
     )
 
     data_dir = cur_dir + 'data/' + config['reference_frame'] + '/training/'
