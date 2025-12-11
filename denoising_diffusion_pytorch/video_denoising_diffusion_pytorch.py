@@ -852,6 +852,9 @@ class GaussianDiffusion(nn.Module):
         dynamic_thres_percentile = 0.9,
         sampling_timesteps = 1000,
         ddim_sampling_eta = 0.,
+        # --- physics / multi-scale consistency options ---
+        lambda_phys: float = 0.0,
+        phys_num_levels: int = 2,
     ):
         super().__init__()
         self.channels = channels
@@ -910,6 +913,43 @@ class GaussianDiffusion(nn.Module):
         assert self.sampling_timesteps <= timesteps
         self.is_ddim_sampling = self.sampling_timesteps < timesteps
         self.ddim_sampling_eta = ddim_sampling_eta
+
+        # physics consistency configuration (video RG-style loss)
+        self.lambda_phys = float(lambda_phys)
+        self.phys_num_levels = int(phys_num_levels)
+        # simple 3D average-pooling coarse-graining: (frames, H, W) -> keep time, pool space
+        self.phys_pool = nn.AvgPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
+
+    def physics_consistency_loss(self, x_start_pred: torch.Tensor) -> torch.Tensor:
+        """
+        Multi-scale consistency in a latent space for generated videos.
+        x_start_pred: (b, c, f, h, w) denoised sample (normalized to [-1, 1]).
+
+        We define z^{(l)}_t as spatially pooled features at level l and
+        penalize differences || z^{(l)}_t - z^{(l+1)}_t ||^2 across levels.
+        """
+        if self.lambda_phys <= 0.0:
+            # return a zero loss that keeps gradients well-defined
+            return x_start_pred.new_zeros(())
+
+        # work on a copy to avoid in-place issues
+        x = x_start_pred
+
+        zs = []
+        # build multi-level representation
+        for level in range(self.phys_num_levels + 1):
+            # global average over spatial dimensions -> (b, c, f)
+            z = x.mean(dim=(-1, -2))
+            zs.append(z)
+            if level < self.phys_num_levels:
+                x = self.phys_pool(x)
+
+        # impose RG-style consistency across neighbouring levels
+        phys_loss = x_start_pred.new_zeros(())
+        for level in range(self.phys_num_levels):
+            phys_loss = phys_loss + F.mse_loss(zs[level], zs[level + 1])
+
+        return phys_loss
 
     def q_mean_variance(self, x_start, t):
         mean = extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
@@ -1050,12 +1090,21 @@ class GaussianDiffusion(nn.Module):
 
         x_recon = self.denoise_fn(x_noisy, t, cond = cond, **kwargs)
 
+        # standard diffusion loss: predict added noise
         if self.loss_type == 'l1':
             loss = F.l1_loss(noise, x_recon)
         elif self.loss_type == 'l2':
             loss = F.mse_loss(noise, x_recon)
         else:
             raise NotImplementedError()
+
+        # optional physics / multi-scale consistency term, defined on the
+        # predicted clean sample x_0 inferred from noise prediction.
+        # NOTE: must remain differentiable to affect training.
+        if self.lambda_phys > 0.0:
+            x0_pred = self.predict_start_from_noise(x_noisy, t, x_recon)
+            phys_loss = self.physics_consistency_loss(x0_pred)
+            loss = loss + self.lambda_phys * phys_loss
 
         return loss
 
